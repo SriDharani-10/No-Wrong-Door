@@ -49,6 +49,7 @@ curl http://127.0.0.1:8080/health
 | `GET /benefits/<ref>` | One Benefits Register record, e.g. `/benefits/NO%2F2019%2F4234` (URL-encode the slashes) |
 | `GET /unified/<identifier>` | **The core endpoint.** Pass an id from *either* source; get back everything known from that source, plus an explicit statement about the other |
 | `GET /unified?resident_id=..&benefits_ref=..` | Same idea, for when you already know both identifiers for one person |
+| `GET /match/<identifier>` | **Optional feature, separate from the endpoints above.** Pass one identifier; this searches the *other* source for the best-scoring candidate match (name + date of birth + city) and reports a confidence score — or honestly reports no confident match. See DECISIONS.md, "Cross-source matching," for the scoring approach and its limits. |
 
 See each endpoint's docstring in `app/main.py` for full detail, and
 **`DECISIONS.md`** for the degradation policy — what a caller gets when a
@@ -75,6 +76,16 @@ curl "http://127.0.0.1:8080/unified?resident_id=R-10234&benefits_ref=NO/2019/466
 # a benefits ref that does NOT exist, to see the honest "not_found" path
 # (distinct from "unavailable" — see DECISIONS.md)
 curl http://127.0.0.1:8080/unified/ZZ%2F1900%2F0000
+```
+
+```bash
+# 4. optional matching: give ONE id, let the system search the other
+#    source and score the best candidate itself
+curl http://127.0.0.1:8080/match/R-10063
+# -> finds CA/2023/4063 (Elena Ashford) automatically, score 100
+
+# a resident with no real counterpart in the other source — honest "no match"
+curl http://127.0.0.1:8080/match/R-10394
 ```
 
 Run `curl http://127.0.0.1:8080/benefits` a handful of times in a row, or

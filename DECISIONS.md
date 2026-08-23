@@ -112,9 +112,40 @@ record across both sources. Both mock services strip this field before
 serving it over HTTP. We noticed it, and deliberately did not use it — the
 data pack README says the solution must go through the services, and using
 a field that's invisible to any real integration would defeat the entire
-point of the problem. If we build the stretch-goal matcher later, it will
-be done properly, on the fields actually exposed over the wire (name + date
-of birth), with a stated confidence — not by reading the answer key.
+point of the problem. The matcher below is built on the fields actually
+exposed over the wire (name + date of birth + city), never on `_pid`.
+
+## Cross-source matching (added as a separate, explicit feature)
+
+After the floor was met and verified, we added an opt-in matching feature —
+**not** because the floor requires it (it explicitly doesn't), but as a
+deliberate quality improvement, kept fully separate from the required
+`/unified` endpoint so it carries zero risk to the floor behaviour above.
+
+What it does: `GET /match/<identifier>` takes ONE identifier (from either
+source), fetches that record, then searches the full listing of the OTHER
+source for the best-scoring candidate, using a plain point-based score
+(last name 40, first name 30, date of birth 25, city 5 — see
+`core/matching.py`). A candidate must score ≥70/100 to be reported as a
+match at all; below that, the endpoint honestly reports no confident match
+rather than guessing. The score and exactly which fields matched are
+always shown, so a human reviewing the result can judge the risk
+themselves rather than trusting an unexplained "yes."
+
+Why this is safe to add now, this late: it lives entirely in two new
+functions (`core/matching.py`, `build_matched_view` in `core/unified.py`)
+plus one new route in `app/main.py`. `build_unified_view` and
+`build_unified_pair` — the functions backing every endpoint used during
+floor verification — are byte-for-byte unchanged. Verified by re-running
+the full existing test suite (all 12 original tests still pass) plus
+manual re-checks of `/unified/<id>`, `/unified?...`, `/residents`, and
+`/benefits` after this change, before adding anything new.
+
+Honest limitation: this is heuristic matching on public-facing fields, not
+guaranteed correctness. Two different people could in principle share a
+name and date of birth. We chose a 70-point threshold and full transparency
+about matched fields specifically so this risk is visible to whoever reads
+the result, rather than hidden behind a confident-looking merge.
 
 ## What we cut for time
 
