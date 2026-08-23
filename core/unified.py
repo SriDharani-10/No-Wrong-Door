@@ -151,3 +151,75 @@ def build_unified_pair(resident_id: Optional[str], benefits_ref: Optional[str],
         view["sources"]["benefits_register"] = {"status": "not_queried", "reason": "no benefits ref supplied"}
 
     return view
+
+
+def build_matched_view(identifier: str, resident_adapter, benefits_adapter) -> dict:
+    """
+    Attempt cross-source matching for one identifier — an explicitly
+    separate, opt-in feature from build_unified_view above. Backs ONLY the
+    /match/<identifier> endpoint (see app/main.py). build_unified_view
+    itself is untouched and behaves exactly as before.
+
+    Fetches the anchor record from the source the identifier belongs to
+    (reusing the same adapters, same degradation handling as everywhere
+    else), then searches the FULL listing of the other source for the
+    best-scoring candidate (see core/matching.py). Reports the match score
+    plainly — never silently merges without showing its work.
+    """
+    from core.matching import find_best_match
+
+    origin = classify_identifier(identifier)
+    result = {
+        "requested_identifier": identifier,
+        "anchor": None,
+        "anchor_source": origin,
+        "match": None,
+        "match_found": False,
+        "sources": {},
+    }
+
+    if origin is None:
+        result["error"] = (
+            "identifier not recognised as a Resident Index id (e.g. R-10234) "
+            "or a Benefits Register ref (e.g. NO/2019/4234)"
+        )
+        return result
+
+    if origin == "resident_index":
+        anchor_result = resident_adapter.fetch_one(identifier)
+        other_adapter = benefits_adapter
+        other_name = "benefits_register"
+    else:
+        anchor_result = benefits_adapter.fetch_one(identifier)
+        other_adapter = resident_adapter
+        other_name = "resident_index"
+
+    result["sources"][origin] = _result_block(anchor_result)
+
+    if not anchor_result.ok():
+        result["error"] = f"{origin} unavailable or has no record for this identifier"
+        return result
+
+    result["anchor"] = anchor_result.data
+
+    other_result = other_adapter.fetch_all()
+    result["sources"][other_name] = _result_block(other_result)
+
+    if not other_result.ok():
+        result["error"] = f"{other_name} unavailable — cannot attempt matching right now"
+        return result
+
+    best = find_best_match(anchor_result.data, origin, other_result.data)
+    if best is None:
+        result["match_found"] = False
+        result["note"] = "no candidate in the other source scored high enough to be reported as a match"
+        return result
+
+    result["match_found"] = True
+    result["match"] = {
+        "record": best.record,
+        "score": best.score,
+        "confidence": "high" if best.score >= 90 else "medium",
+        "matched_on": best.matched_on,
+    }
+    return result
