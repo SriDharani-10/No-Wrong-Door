@@ -124,12 +124,18 @@ deliberate quality improvement, kept fully separate from the required
 
 What it does: `GET /match/<identifier>` takes ONE identifier (from either
 source), fetches that record, then searches the full listing of the OTHER
-source for the best-scoring candidate, using a plain point-based score
-(last name 40, first name 30, date of birth 25, city 5 — see
-`core/matching.py`). A candidate must score ≥70/100 to be reported as a
-match at all; below that, the endpoint honestly reports no confident match
-rather than guessing. The score and exactly which fields matched are
-always shown, so a human reviewing the result can judge the risk
+source for the closest candidate, using a plain point-based score (last
+name 40, first name 30, date of birth 25, city 5 — see
+`core/matching.py`). The closest candidate and its real score are ALWAYS
+shown, even when the score is low — `match_found` only turns `true` once
+the score clears 70/100, but a low score is more informative than
+silence, so it's never hidden. (First version of this endpoint hid
+low-scoring candidates entirely; we changed that after finding a real
+case — same last name and city, different first name and birthdate,
+scoring 45 — where seeing "closest was 45/100, matched on last_name+city
+only" is a meaningfully better answer than an unexplained "no match".)
+The score and exactly which fields matched are always shown, so a human
+reviewing the result can judge the risk
 themselves rather than trusting an unexplained "yes."
 
 Why this is safe to add now, this late: it lives entirely in two new
