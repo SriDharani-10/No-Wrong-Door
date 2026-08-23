@@ -42,6 +42,16 @@ Endpoints
         combined pull. Still not identity matching — the correlation is
         supplied by the caller, not inferred.
 
+    GET /match/<identifier>
+        OPTIONAL, separate feature. Pass an id from either source; this
+        endpoint fetches that record, then SEARCHES the other source for
+        the best-scoring candidate match on name + date of birth + city,
+        and reports the match plus a confidence score — or reports
+        honestly that no confident match was found. See core/matching.py
+        and DECISIONS.md for the scoring approach and its limits. This is
+        heuristic matching, not certainty — the score is there so a human
+        can judge the risk themselves.
+
 All responses are JSON. All failure modes documented in DECISIONS.md.
 """
 from __future__ import annotations
@@ -56,7 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from adapters.resident_index import ResidentIndexAdapter
 from adapters.benefits_register import BenefitsRegisterAdapter
-from core.unified import build_unified_view, build_unified_pair, classify_identifier
+from core.unified import build_unified_view, build_unified_pair, build_matched_view, classify_identifier
 
 RESIDENT_INDEX_URL = os.environ.get("RESIDENT_INDEX_URL", "http://127.0.0.1:8081")
 BENEFITS_REGISTER_URL = os.environ.get("BENEFITS_REGISTER_URL", "http://127.0.0.1:8082")
@@ -117,6 +127,12 @@ class Handler(BaseHTTPRequestHandler):
                 if view.get("error", "").startswith("identifier not recognised"):
                     code = 400
                 return self._send(code, view)
+
+            if path.startswith("/match/"):
+                identifier = unquote(path[len("/match/"):])
+                result = build_matched_view(identifier, resident_adapter, benefits_adapter)
+                code = 400 if result.get("error", "").startswith("identifier not recognised") else 200
+                return self._send(code, result)
 
             return self._send(404, {"error": "no_such_endpoint", "path": path})
 
