@@ -166,7 +166,7 @@ def build_matched_view(identifier: str, resident_adapter, benefits_adapter) -> d
     best-scoring candidate (see core/matching.py). Reports the match score
     plainly — never silently merges without showing its work.
     """
-    from core.matching import find_best_match
+    from core.matching import find_best_match, MATCH_THRESHOLD
 
     origin = classify_identifier(identifier)
     result = {
@@ -211,15 +211,31 @@ def build_matched_view(identifier: str, resident_adapter, benefits_adapter) -> d
 
     best = find_best_match(anchor_result.data, origin, other_result.data)
     if best is None:
+        # only happens if the other source's full listing was genuinely empty
         result["match_found"] = False
-        result["note"] = "no candidate in the other source scored high enough to be reported as a match"
+        result["note"] = "the other source returned no records to compare against"
         return result
 
-    result["match_found"] = True
+    result["match_found"] = best.score >= MATCH_THRESHOLD
+    if best.score >= 90:
+        confidence = "high"
+    elif best.score >= MATCH_THRESHOLD:
+        confidence = "medium"
+    elif best.score > 0:
+        confidence = "low — below the confidence threshold, shown for transparency only"
+    else:
+        confidence = "none — no fields in common with the closest candidate"
+
     result["match"] = {
         "record": best.record,
         "score": best.score,
-        "confidence": "high" if best.score >= 90 else "medium",
+        "confidence": confidence,
         "matched_on": best.matched_on,
+        "threshold": MATCH_THRESHOLD,
     }
+    if not result["match_found"]:
+        result["note"] = (
+            f"closest candidate scored {best.score}/100, below the {MATCH_THRESHOLD} "
+            "confidence threshold — shown for reference, not reported as a confirmed match"
+        )
     return result
