@@ -53,18 +53,26 @@ class TestFindBestMatch(unittest.TestCase):
         self.assertEqual(best.record, XML_ELENA_EXACT)
         self.assertEqual(best.score, 100)
 
-    def test_no_candidate_above_threshold_returns_none(self):
+    def test_low_scoring_candidate_is_still_returned_with_its_real_score(self):
+        # find_best_match no longer hides a weak result — it always reports
+        # the closest candidate and its actual score. Deciding what counts
+        # as a "confident match" is the CALLER's job (build_matched_view),
+        # not this function's — see that threshold check separately below.
         candidates = [XML_DIFFERENT_PERSON]
         best = find_best_match(REST_ELENA, "resident_index", candidates)
+        self.assertIsNotNone(best)
+        self.assertEqual(best.score, 0)
+        self.assertEqual(best.record, XML_DIFFERENT_PERSON)
+
+    def test_empty_candidate_list_returns_none(self):
+        best = find_best_match(REST_ELENA, "resident_index", [])
         self.assertIsNone(best)
 
-    def test_threshold_is_enforced_not_just_highest_score(self):
-        # Even if this is the "best" of a bad set, it shouldn't be reported
-        # as a match if it doesn't clear the confidence bar.
-        weak_candidate = {"name_raw": "ASHFORD, Someone", "date_of_birth": "1953-09-07", "city": ""}
-        best = find_best_match(REST_ELENA, "resident_index", [weak_candidate])
-        if best is not None:
-            self.assertGreaterEqual(best.score, MATCH_THRESHOLD)
+    def test_threshold_constant_is_still_exported_for_callers_to_use(self):
+        # The threshold itself still exists and is used by build_matched_view
+        # to decide match_found — just no longer enforced inside this function.
+        self.assertIsInstance(MATCH_THRESHOLD, int)
+        self.assertGreater(MATCH_THRESHOLD, 0)
 
     def test_works_symmetrically_from_benefits_register_side(self):
         candidates = [REST_ELENA]

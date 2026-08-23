@@ -8,8 +8,12 @@ as a separate, explicit feature)".
 
 What this does, in plain terms: given one record from one source, search
 every record in the OTHER source and score how likely each one is to
-describe the same person. Return the best-scoring candidate, its score, and
-be explicit when nothing scores high enough to trust.
+describe the same person. Always returns the single closest candidate and
+its real score — even a low or zero score — so the caller can see exactly
+how close (or not) the nearest thing was, rather than just "nothing
+found." Deciding whether a score counts as a confident match is left to
+the caller (see build_matched_view in core/unified.py), using
+MATCH_THRESHOLD below.
 
 This is a heuristic, not a guarantee. Two different people could share a
 name and date of birth. The score is reported precisely so a human
@@ -21,9 +25,9 @@ Scoring (out of 100, all fields optional so partial data still scores):
     - first name matches (case-insensitive)        : 30 points
     - date of birth matches exactly                : 25 points
     - city matches (case-insensitive)              : 5 points
-A candidate must score at least MATCH_THRESHOLD to be reported as a match
-at all. Below that, this module reports "no confident match" rather than
-guessing.
+MATCH_THRESHOLD (70) is the bar the CALLER uses to decide whether a score
+counts as a reportable match. This module itself doesn't hide anything
+below it — it always hands back the real number.
 """
 from __future__ import annotations
 
@@ -89,8 +93,11 @@ def find_best_match(anchor_record: dict, anchor_source: str, candidates: list[di
     anchor_source: "resident_index" or "benefits_register" — which side the anchor is from
     candidates: the FULL normalized record list from the OTHER source
 
-    Returns the single best-scoring candidate if it clears MATCH_THRESHOLD,
-    else None.
+    Always returns the single highest-scoring candidate found, even if its
+    score is low (or zero) — the caller decides what counts as a confident
+    match using MATCH_THRESHOLD. We report the number rather than hide it:
+    a score of 5 and "found nothing at all" mean different things to
+    someone reading the result. Returns None only if candidates is empty.
     """
     best: Optional[MatchCandidate] = None
 
@@ -103,6 +110,4 @@ def find_best_match(anchor_record: dict, anchor_source: str, candidates: list[di
         if best is None or score > best.score:
             best = MatchCandidate(record=candidate, score=score, matched_on=matched_on)
 
-    if best is None or best.score < MATCH_THRESHOLD:
-        return None
     return best
