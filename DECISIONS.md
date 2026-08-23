@@ -36,6 +36,43 @@ over-engineering against an unknown change is its own failure. Two adapters
 and one assembly module is the minimum separation that pays off regardless
 of what the change turns out to be.
 
+That bet paid off directly on day two — see below.
+
+## Day two: Benefits Register failure rate rose to 40%
+
+The surprise requirement change: the Benefits Register's failure rate went
+from ~15% (as documented in the original data pack) to a permanent ~40%.
+
+Because the adapter boundary was already strict, this touched exactly one
+file: `adapters/benefits_register.py`. Nothing in `core/unified.py`,
+`app/main.py`, or the other adapter changed at all — this is the payoff of
+the "where a change would land" bet made in the architecture section above.
+
+At 15%, three sequential attempts (worst case ~7s: 3 × up to 2.4s) were an
+acceptable retry budget. At 40%, that same sequential budget both (a) fails
+a round noticeably more often (a single round is just one attempt, so the
+retry-exhaustion odds are 0.4³ ≈ 6.4% — small, but the *degraded* rate goes
+up a lot, since any 2-or-3-attempt success now happens far more often) and
+(b) still leaves that same ~7s worst case, which starts to feel bad for a
+"live" API even when it does succeed.
+
+Fix: each retry round now fires **two attempts at the same time** and uses
+whichever answers first, instead of one attempt at a time. A round only
+fails if both parallel attempts fail, which — at a 40% single-call failure
+rate — drops the odds of a round failing from 40% to roughly 0.4 × 0.4 =
+16%. Rounds still run up to `MAX_ATTEMPTS = 3` times with the same
+0.3s/0.6s backoff between rounds as before; only how each individual round
+is attempted changed. This buys back most of the reliability that the
+40% rate took away, without changing the retry *count* or the honest
+all-retries-exhausted → `unavailable` contract described below.
+
+Also updated for day two: `services/xml_service.py`'s default
+`--failure-rate` and `scripts/run_all.sh`'s `BENEFITS_FAILURE_RATE` default
+both now start the mock service at 0.40 instead of 0.15, so a clean-clone
+run reproduces the day-two environment by default. README's "Running it"
+and "Watching the Benefits Register degrade live" sections were updated to
+match — no more mention of the old 15% figure.
+
 ## The degradation policy (this is the deliverable, not just the code)
 
 Every source call collapses to exactly one of four states, always reported
@@ -44,8 +81,8 @@ explicitly to the caller — never inferred, never silently absent:
 | Status | Meaning | What the caller sees |
 |---|---|---|
 | `ok` | Call succeeded first try | The data, plus `status: "ok"` |
-| `degraded` | Call succeeded after 1+ internal retries | The data, plus `status: "degraded"` and a reason (`"succeeded after N attempts"`) |
-| `unavailable` | All retries exhausted, no data obtainable | No data for that source, `status: "unavailable"`, and a reason (e.g. `http_500`, `unreachable: ...`) |
+| `degraded` | Call succeeded after 1+ internal retry rounds | The data, plus `status: "degraded"` and a reason (`"succeeded after N attempts"`) |
+| `unavailable` | All retry rounds exhausted, no data obtainable | No data for that source, `status: "unavailable"`, and a reason (e.g. `http_500`, `unreachable: ...`) |
 | `not_found` | Source reachable, record doesn't exist there | `status: "not_found"` — deliberately distinct from `unavailable`, because "we don't have this person" and "we couldn't reach the system" are different facts a caseworker needs to tell apart |
 
 Concretely, for `/unified/<identifier>`:
@@ -64,8 +101,10 @@ There are no write operations anywhere in this system — everything is a
 read. That makes "idempotent" close to automatic (a GET is naturally
 idempotent), but "retry-safe" still had to be built deliberately:
 
-- **Benefits Register (flaky, slow):** up to 3 attempts per logical call,
-  small linear backoff (0.3s, 0.6s) between them. A 500, a connection
+- **Benefits Register (flaky, slow):** up to 3 rounds per logical call,
+  small linear backoff (0.3s, 0.6s) between rounds, each round firing two
+  parallel attempts and taking whichever answers first (see "Day two"
+  above for why the parallel step was added). An HTTP 500, a connection
   error, and malformed XML are all treated as retryable — all three are
   documented as routine for this source. Retrying blindly forever was
   rejected: this is a real system under real load in the scenario, and an
@@ -90,21 +129,22 @@ page N re-served as the first record of page N+1). Also verified live: the
 real service serves 620 records across pages with boundary duplication, and
 `/residents` returns exactly 620 unique `source_id`s.
 
-## No cross-source identity matching — and why we're not tempted
+## No cross-source identity matching by default — and why `/unified` never guesses
 
-The problem document is explicit that this is a stretch goal, "genuinely
-hard," and "easy to lose a day in" — and separately warns that being wrong
-*quietly* about a match is worse than not matching at all. We took that at
-face value. `/unified/<identifier>` requires the caller to supply an
-identifier that already belongs to one source; it does not attempt to guess
-whether some other source's record describes the same person. Where a
-caseworker already knows both identifiers for someone (which the problem
-statement's own scenario implies is common — that's literally what the
-browser-tab-copying process is doing today), `/unified?resident_id=..&benefits_ref=..`
-lets them pull both in one call. This is not identity resolution — the
-correlation is supplied by the human, not inferred by us — but it removes
-the same manual work the problem describes, without any risk of a wrong
-silent merge.
+The problem document is explicit that automatic identity matching is a
+stretch goal, "genuinely hard," and "easy to lose a day in" — and
+separately warns that being wrong *quietly* about a match is worse than not
+matching at all. We took that at face value for the required endpoint:
+`/unified/<identifier>` requires the caller to supply an identifier that
+already belongs to one source; it does not attempt to guess whether some
+other source's record describes the same person. Where a caseworker
+already knows both identifiers for someone (which the problem statement's
+own scenario implies is common — that's literally what the
+browser-tab-copying process is doing today),
+`/unified?resident_id=..&benefits_ref=..` lets them pull both in one call.
+This is not identity resolution — the correlation is supplied by the
+human, not inferred by us — but it removes the same manual work the
+problem describes, without any risk of a wrong silent merge.
 
 One more thing worth recording: the raw data files (`_rest_data.json`,
 `_xml_data.json`) contain a `_pid` field that would trivially link every
@@ -126,26 +166,25 @@ What it does: `GET /match/<identifier>` takes ONE identifier (from either
 source), fetches that record, then searches the full listing of the OTHER
 source for the closest candidate, using a plain point-based score (last
 name 40, first name 30, date of birth 25, city 5 — see
-`core/matching.py`). The closest candidate and its real score are ALWAYS
-shown, even when the score is low — `match_found` only turns `true` once
-the score clears 70/100, but a low score is more informative than
-silence, so it's never hidden. (First version of this endpoint hid
-low-scoring candidates entirely; we changed that after finding a real
-case — same last name and city, different first name and birthdate,
-scoring 45 — where seeing "closest was 45/100, matched on last_name+city
-only" is a meaningfully better answer than an unexplained "no match".)
-The score and exactly which fields matched are always shown, so a human
-reviewing the result can judge the risk
-themselves rather than trusting an unexplained "yes."
+`core/matching.py`, `MATCH_THRESHOLD = 70`). The closest candidate and its
+real score are ALWAYS shown, even when the score is low — `match_found`
+only turns `true` once the score clears 70/100, but a low score is more
+informative than silence, so it's never hidden. (First version of this
+endpoint hid low-scoring candidates entirely; we changed that after
+finding a real case — same last name and city, different first name and
+birthdate, scoring 45 — where seeing "closest was 45/100, matched on
+last_name+city only" is a meaningfully better answer than an unexplained
+"no match".) The score and exactly which fields matched are always shown,
+so a human reviewing the result can judge the risk themselves rather than
+trusting an unexplained "yes."
 
-Why this is safe to add now, this late: it lives entirely in two new
-functions (`core/matching.py`, `build_matched_view` in `core/unified.py`)
-plus one new route in `app/main.py`. `build_unified_view` and
-`build_unified_pair` — the functions backing every endpoint used during
-floor verification — are byte-for-byte unchanged. Verified by re-running
-the full existing test suite (all 12 original tests still pass) plus
-manual re-checks of `/unified/<id>`, `/unified?...`, `/residents`, and
-`/benefits` after this change, before adding anything new.
+Why this was safe to add this late: it lives entirely in two new functions
+(`core/matching.py`, `build_matched_view` in `core/unified.py`) plus one
+new route in `app/main.py`. `build_unified_view` and `build_unified_pair` —
+the functions backing every endpoint used during floor verification — are
+byte-for-byte unchanged by this feature. Verified by re-running the full
+test suite after each step of adding it, plus manual re-checks of
+`/unified/<id>`, `/unified?...`, `/residents`, and `/benefits`.
 
 Honest limitation: this is heuristic matching on public-facing fields, not
 guaranteed correctness. Two different people could in principle share a
@@ -160,16 +199,23 @@ the result, rather than hidden behind a confident-looking merge.
   slowness without it; caching would mainly help under concurrent load,
   which this problem doesn't ask us to simulate.
 - **Circuit breaking.** Same — "if you have time." With only two sources
-  and a bounded 3-attempt retry per call, the cost of not having one is a
+  and a bounded 3-round retry per call, the cost of not having one is a
   slightly slower response during an outage, not a cascading failure.
-- **Identity matching.** Explicitly out of scope per the floor. See above.
+- **Auth and persistence.** Explicitly out of scope per the problem
+  document; both sources are read on demand and nothing is stored.
 
 ## What we would fix first, given another day
 
 - Add a lightweight in-memory cache for `/residents` and `/benefits` (full
   listings only, short TTL) — the Benefits Register in particular is slow
   enough that repeated full-listing calls are the first place a real
-  caseworker would feel it.
-- Build the stretch-goal matcher as an explicitly separate, off-by-default
-  module (`core/matching.py`, not wired into `/unified` by default) so it
-  can be demonstrated without risking the floor behaviour above it.
+  caseworker would feel it, and this only got more true after the day-two
+  failure-rate increase.
+- Commit the day-two changes (`adapters/benefits_register.py`,
+  `scripts/run_all.sh`, README) as their own dedicated commit(s) with a
+  message describing the 15%→40% change, rather than leaving them as
+  uncommitted working-tree edits — the git history currently stops at the
+  `/match` feature and doesn't yet reflect day two.
+- Delete `adapters/benefits_register_old.py`, the pre-day-two version kept
+  alongside the current adapter during the rewrite — it isn't imported
+  anywhere and shouldn't ship in the final submission.

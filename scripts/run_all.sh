@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${BENEFITS_FAILURE_RATE:=0.15}"
+: "${BENEFITS_FAILURE_RATE:=0.40}" #40% delay mentioned here
 export BENEFITS_FAILURE_RATE
 
 python3 services/rest_service.py --port 8081 &

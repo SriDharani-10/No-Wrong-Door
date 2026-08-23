@@ -43,33 +43,53 @@ class BenefitsRegisterAdapter(SourceAdapter):
         self.timeout = timeout
 
     def _get_xml(self, path: str) -> tuple[Optional[ET.Element], Optional[str], int]:
+        """
+        Day-two update: the Benefits Register's failure rate rose to ~40%
+        permanently (see DECISIONS.md, "Day two"). At that rate, calling
+        one attempt at a time back-to-back pushed the worst-case wait for
+        one call to ~7s (3 attempts x up to 2.4s each). To keep the floor's
+        response times reasonable without weakening the retry guarantee,
+        each retry "round" below now fires up to 2 attempts AT THE SAME
+        TIME and uses whichever answers first — cutting the odds of a
+        round failing from 40% to roughly 16% (0.4 x 0.4), without paying
+        for the two attempts sequentially. Rounds still happen up to
+        MAX_ATTEMPTS times with backoff between them, unchanged from
+        before; only how each individual round is attempted changed.
+        """
+        import concurrent.futures
+
+        def _one_call():
+            with urllib.request.urlopen(f"{self.base_url}{path}", timeout=self.timeout) as resp:
+                return ET.fromstring(resp.read())
+
         last_err = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                with urllib.request.urlopen(f"{self.base_url}{path}", timeout=self.timeout) as resp:
-                    body = resp.read()
-                    return ET.fromstring(body), None, attempt
-            except urllib.error.HTTPError as e:
-                # A 500 from this source is documented, routine behaviour —
-                # worth a retry, since the *next* call is often fine.
-                last_err = f"http_{e.code}"
-                if attempt < MAX_ATTEMPTS:
-                    time.sleep(BACKOFF_BASE * attempt)
-                    continue
-                return None, last_err, attempt
-            except ET.ParseError as e:
-                last_err = f"malformed_xml: {e}"
-                if attempt < MAX_ATTEMPTS:
-                    time.sleep(BACKOFF_BASE * attempt)
-                    continue
-                return None, last_err, attempt
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                last_err = f"unreachable: {e}"
-                if attempt < MAX_ATTEMPTS:
-                    time.sleep(BACKOFF_BASE * attempt)
-                    continue
-                return None, last_err, attempt
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(_one_call), pool.submit(_one_call)]
+                result = None
+                errors = []
+                for f in concurrent.futures.as_completed(futures):
+                    try:
+                        result = f.result()
+                        break  # first success wins; the other attempt is left to finish quietly
+                    except urllib.error.HTTPError as e:
+                        errors.append(f"http_{e.code}")
+                    except ET.ParseError as e:
+                        errors.append(f"malformed_xml: {e}")
+                    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                        errors.append(f"unreachable: {e}")
+
+            if result is not None:
+                return result, None, attempt
+
+            last_err = errors[0] if errors else "both parallel attempts failed"
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(BACKOFF_BASE * attempt)
+                continue
+            return None, last_err, attempt
+
         return None, last_err, MAX_ATTEMPTS
+            
 
     @staticmethod
     def _text(el: Optional[ET.Element], tag: str) -> Optional[str]:
