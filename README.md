@@ -57,22 +57,32 @@ tell those apart.
 
 ## Try it
 
+The exact ids/refs below are examples from this data pack's generated data
+(both systems are seeded fresh each run, so if you regenerate the data
+these specific ids won't match — use `/residents` or `/benefits` first to
+grab any current id/ref from your own run).
+
 ```bash
 # a resident that exists
 curl http://127.0.0.1:8080/unified/R-10234
 
-# a benefits record that exists (note URL-encoded slashes)
-curl http://127.0.0.1:8080/unified/NO%2F2019%2F4234
+# a benefits record that exists (note the slash is URL-encoded as %2F)
+curl http://127.0.0.1:8080/unified/NO%2F2019%2F4664
 
 # both known identifiers for the same person, pulled together
-curl "http://127.0.0.1:8080/unified?resident_id=R-10234&benefits_ref=NO/2019/4234"
+curl "http://127.0.0.1:8080/unified?resident_id=R-10234&benefits_ref=NO/2019/4664"
+
+# a benefits ref that does NOT exist, to see the honest "not_found" path
+# (distinct from "unavailable" — see DECISIONS.md)
+curl http://127.0.0.1:8080/unified/ZZ%2F1900%2F0000
 ```
 
-Run `/benefits` or `/unified/<a benefits ref>` a handful of times in a row —
-the Benefits Register fails ~15% of calls and takes 0.7–2.4s per call by
-design (see the data pack). You'll see `"status": "degraded"` when a retry
-was needed and `"status": "unavailable"` (with a reason, never a bare 500)
-on the rare case all retries are exhausted.
+Run `curl http://127.0.0.1:8080/benefits` a handful of times in a row, or
+repeat the second command above — the Benefits Register fails ~15% of
+calls and takes 0.7–2.4s per call by design (see the data pack). You'll
+see `"status": "degraded"` when a retry was needed and
+`"status": "unavailable"` (with a reason, never a bare 500) on the rare
+case all retries are exhausted.
 
 ## Tests
 
