@@ -28,7 +28,7 @@ From the repo root, in three terminals (or use the helper script, which
 does this for you):
 
 ```bash
-./scripts/run_all.sh
+bash ./scripts/run_all.sh
 ```
 
 This starts, in order: the Resident Index (REST, :8081), the Benefits
